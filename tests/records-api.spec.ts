@@ -44,3 +44,66 @@ test('a deleted record leaves the list', async ({ request }) => {
   const records = await (await request.get('/record')).json();
   expect(records.some((r: { _id: string }) => r._id === id)).toBe(false);
 });
+
+// Records made by the length-limit tests start with this prefix, so a run that
+// stops early can be cleaned up with scripts/delete-length-limit-records.mjs.
+const LENGTH_PREFIX = 'LengthLimit';
+
+// A name unique to this run, padded with 'a' to exactly `length` characters.
+function uniqueNameOfLength(length: number): string {
+  return uniqueName(LENGTH_PREFIX).replace(/ /g, '-').padEnd(length, 'a');
+}
+
+async function namesInList(request: APIRequestContext): Promise<string[]> {
+  const response = await request.get('/record');
+  expect(response.ok()).toBeTruthy();
+  return (await response.json()).map((r: { name: string }) => r.name);
+}
+
+test.describe('name and position length limit', () => {
+  const created: string[] = [];
+
+  test.afterEach(async ({ request }) => {
+    for (const id of created.splice(0)) await request.delete(`/record/${id}`);
+  });
+
+  test('a new record with a name over 80 characters is refused and not stored', async ({ request }) => {
+    const name = uniqueNameOfLength(81);
+    const response = await request.post('/record', { data: { name, position: 'Engineer', level: 'Junior' } });
+    expect(response.status()).toBe(400);
+    expect((await response.json()).errors).toEqual(['Name must be at most 80 characters.']);
+    expect(await namesInList(request)).not.toContain(name);
+  });
+
+  test('a new record with a position over 80 characters is refused and not stored', async ({ request }) => {
+    const name = uniqueNameOfLength(40);
+    const response = await request.post('/record', { data: { name, position: 'a'.repeat(81), level: 'Junior' } });
+    expect(response.status()).toBe(400);
+    expect((await response.json()).errors).toEqual(['Position must be at most 80 characters.']);
+    expect(await namesInList(request)).not.toContain(name);
+  });
+
+  test('an update to a name over 80 characters is refused and the record keeps its name', async ({ request }) => {
+    const name = uniqueNameOfLength(40);
+    const id = await createRecord(request, name);
+    created.push(id);
+    const update = await request.patch(`/record/${id}`, {
+      data: { name: uniqueNameOfLength(81), position: 'Engineer', level: 'Junior' },
+    });
+    expect(update.status()).toBe(400);
+    expect((await update.json()).errors).toEqual(['Name must be at most 80 characters.']);
+    const response = await request.get(`/record/${id}`);
+    expect(response.ok()).toBeTruthy();
+    expect((await response.json()).name).toBe(name);
+  });
+
+  test('a new record with a name of exactly 80 characters is stored', async ({ request }) => {
+    const name = uniqueNameOfLength(80);
+    expect(name).toHaveLength(80);
+    const id = await createRecord(request, name);
+    created.push(id);
+    const response = await request.get(`/record/${id}`);
+    expect(response.ok()).toBeTruthy();
+    expect(await response.json()).toMatchObject({ _id: id, name, position: 'Engineer', level: 'Junior' });
+  });
+});
